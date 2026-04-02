@@ -1,0 +1,6 @@
+.build/
+NotchCode.app/
+.swiftpm/
+*.xcodeproj
+xcuserdata/
+.DS_Store
