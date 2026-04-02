@@ -31,6 +31,7 @@ class ClaudeCodeProvider: BaseAgentProvider {
 
         decisionTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.coordination.expireOldDecisions()
+            self?.coordination.pollMCPConflicts()
         }
 
         DispatchQueue.global(qos: .utility).async { [weak self] in

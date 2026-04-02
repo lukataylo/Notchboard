@@ -213,6 +213,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var registry: AgentProviderRegistry!
     var coordination: CoordinationEngine!
     var mcpManager: MCPServerManager!
+    var fileWatcher: FileWatcher!
     let state = NotchState()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -222,6 +223,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set up MCP server
         mcpManager = MCPServerManager()
         mcpManager.writeMCPServer()
+
+        // Set up file watcher (detects external edits from Cursor, VS Code, etc.)
+        fileWatcher = FileWatcher(coordination: coordination, state: state)
+        fileWatcher.start()
 
         // Set up provider registry with coordination
         registry = AgentProviderRegistry(state: state)
@@ -252,6 +257,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        fileWatcher?.stop()
         registry?.cleanupAll()
     }
 }

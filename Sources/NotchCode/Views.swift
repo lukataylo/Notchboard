@@ -9,28 +9,43 @@ struct CollapsedView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Group {
-                let types = state.activeAgentTypes
-                if types.count == 1, let type = types.first {
-                    agentIcon(for: type, size: hasNotch ? 18 : 16)
-                } else {
-                    NotchCodeIcon()
-                        .fill(Color.white.opacity(0.7))
-                        .frame(width: hasNotch ? 18 : 16, height: hasNotch ? 18 : 16)
-                }
-            }
-            .fixedSize()
-            .padding(.leading, hasNotch ? 20 : 14)
-
-            Spacer(minLength: 8)
-
+            // During conflicts, replace the app icon with a warning icon
             if !coordination.pendingDecisions.isEmpty {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10))
+                    .font(.system(size: hasNotch ? 16 : 14))
                     .foregroundColor(.red)
+                    .fixedSize()
+                    .padding(.leading, hasNotch ? 20 : 14)
+
+                Spacer(minLength: 8)
+
+                if let d = coordination.pendingDecisions.first {
+                    Text(d.fileName)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(.red.opacity(0.9))
+                        .lineLimit(1)
+                }
+
                 Spacer(minLength: 8)
                     .padding(.trailing, hasNotch ? 16 : 14)
-            } else if state.hasActiveWork, let session = state.activeSession {
+            } else {
+                Group {
+                    let types = state.activeAgentTypes
+                    if types.count == 1, let type = types.first {
+                        agentIcon(for: type, size: hasNotch ? 18 : 16)
+                    } else {
+                        NotchCodeIcon()
+                            .fill(Color.white.opacity(0.7))
+                            .frame(width: hasNotch ? 18 : 16, height: hasNotch ? 18 : 16)
+                    }
+                }
+                .fixedSize()
+                .padding(.leading, hasNotch ? 20 : 14)
+
+                Spacer(minLength: 8)
+            }
+
+            if coordination.pendingDecisions.isEmpty, state.hasActiveWork, let session = state.activeSession {
                 if session.isWaitingForUser {
                     Text("Waiting for you")
                         .font(.system(size: 10, weight: .semibold))
@@ -67,72 +82,89 @@ struct CollapsedView: View {
 
 struct ConflictVisual: View {
     let decision: PendingDecision
-    let onAllow: () -> Void
-    let onBlock: () -> Void
+    let onKeepOwner: () -> Void
+    let onLetIn: () -> Void
 
     var body: some View {
-        VStack(spacing: 6) {
-            // Visual: [Agent A dot] ——red line—— filename ——red line—— [Agent B dot]
+        VStack(spacing: 8) {
+            // Visual: [Owner] ——red line—— filename ——red line—— [Modifier]
             HStack(spacing: 0) {
-                // Owner agent
                 VStack(spacing: 2) {
-                    agentIcon(for: decision.ownerAgent, size: 14)
+                    agentIcon(for: decision.ownerAgent, size: 16)
                     Text(decision.ownerSession)
                         .font(.system(size: 7, weight: .medium))
-                        .foregroundColor(decision.ownerAgent.accentColor.opacity(0.7))
+                        .foregroundColor(decision.ownerAgent.accentColor.opacity(0.8))
                         .lineLimit(1)
+                    Text("owns file")
+                        .font(.system(size: 6))
+                        .foregroundColor(.white.opacity(0.25))
                 }
                 .frame(width: 60)
 
-                // Red connecting line + filename
-                VStack(spacing: 2) {
+                VStack(spacing: 3) {
                     HStack(spacing: 0) {
-                        Rectangle().fill(Color.red.opacity(0.4)).frame(height: 1.5)
+                        Rectangle().fill(Color.red.opacity(0.5)).frame(height: 1.5)
                         Text(decision.fileName)
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundColor(.red.opacity(0.9))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(.red)
                             .padding(.horizontal, 6)
-                        Rectangle().fill(Color.red.opacity(0.4)).frame(height: 1.5)
+                        Rectangle().fill(Color.red.opacity(0.5)).frame(height: 1.5)
                     }
-                    Text(decision.toolDescription)
-                        .font(.system(size: 8, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.35))
-                        .lineLimit(1)
+                    if decision.isExternal {
+                        Text("external edit detected")
+                            .font(.system(size: 7, weight: .medium))
+                            .foregroundColor(.red.opacity(0.6))
+                    }
                 }
 
-                // Blocked agent
                 VStack(spacing: 2) {
-                    agentIcon(for: decision.blockedAgent, size: 14)
+                    agentIcon(for: decision.blockedAgent, size: 16)
                     Text(decision.blockedSession)
                         .font(.system(size: 7, weight: .medium))
-                        .foregroundColor(decision.blockedAgent.accentColor.opacity(0.7))
+                        .foregroundColor(decision.blockedAgent.accentColor.opacity(0.8))
                         .lineLimit(1)
+                    Text(decision.isExternal ? "edited" : "blocked")
+                        .font(.system(size: 6))
+                        .foregroundColor(.red.opacity(0.5))
                 }
                 .frame(width: 60)
             }
 
-            // Allow / Block buttons
-            HStack(spacing: 12) {
-                Button(action: onAllow) {
-                    Text("Allow")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.green)
-                        .padding(.horizontal, 14).padding(.vertical, 4)
-                        .background(Color.green.opacity(0.12))
-                        .cornerRadius(5)
+            // Explainer
+            Text("\(decision.blockedSession) tried to edit \(decision.fileName) but \(decision.ownerSession) is already working on it")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.5))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 8)
+
+            // Action buttons
+            HStack(spacing: 8) {
+                Button(action: onKeepOwner) {
+                    HStack(spacing: 4) {
+                        agentIcon(for: decision.ownerAgent, size: 9)
+                        Text(decision.isExternal ? "Revert to \(decision.ownerSession)" : "Keep \(decision.ownerSession)")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundColor(decision.ownerAgent.accentColor)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(decision.ownerAgent.accentColor.opacity(0.12))
+                    .cornerRadius(6)
                 }.buttonStyle(.plain)
 
-                Button(action: onBlock) {
-                    Text("Block")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.red)
-                        .padding(.horizontal, 14).padding(.vertical, 4)
-                        .background(Color.red.opacity(0.12))
-                        .cornerRadius(5)
+                Button(action: onLetIn) {
+                    HStack(spacing: 4) {
+                        agentIcon(for: decision.blockedAgent, size: 9)
+                        Text(decision.isExternal ? "Accept \(decision.blockedSession)" : "Let \(decision.blockedSession) in")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundColor(decision.blockedAgent.accentColor)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(decision.blockedAgent.accentColor.opacity(0.12))
+                    .cornerRadius(6)
                 }.buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Color.red.opacity(0.04))
     }
 }
@@ -167,6 +199,7 @@ struct ExpandedView: View {
     var onCollapse: () -> Void = {}
     var registry: AgentProviderRegistry?
     @State private var messageText: String = ""
+    @State private var autoResolve: Bool = AppSettings.shared.autoResolve
 
     var body: some View {
         VStack(spacing: 0) {
@@ -196,18 +229,41 @@ struct ExpandedView: View {
             .onTapGesture { onCollapse() }
             .padding(.horizontal, 16).padding(.top, hasNotch ? 12 : 10).padding(.bottom, 6)
 
-            // Stats bar (always visible when there's activity)
+            // Stats bar + auto-resolve toggle
             let s = coordination.stats
             if s.conflictsPrevented + s.filesCoordinated + s.contextShared > 0 {
-                StatsBar(stats: s)
+                HStack(spacing: 0) {
+                    StatsBar(stats: s)
+                    Toggle("Auto-resolve", isOn: $autoResolve)
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundColor(.white.opacity(0.35))
+                        .padding(.trailing, 16)
+                        .onChange(of: autoResolve) { on in
+                            AppSettings.shared.autoResolve = on
+                        }
+                }
             }
 
             // Conflict visualizations
             ForEach(coordination.pendingDecisions) { decision in
                 ConflictVisual(
                     decision: decision,
-                    onAllow: { coordination.writeDecision(requestId: decision.id, approved: true) },
-                    onBlock: { coordination.writeDecision(requestId: decision.id, approved: false) }
+                    onKeepOwner: {
+                        if decision.isExternal {
+                            coordination.resolveExternalConflict(id: decision.id, keepOwner: true)
+                        } else {
+                            coordination.writeDecision(requestId: decision.id, approved: false)
+                        }
+                    },
+                    onLetIn: {
+                        if decision.isExternal {
+                            coordination.resolveExternalConflict(id: decision.id, keepOwner: false)
+                        } else {
+                            coordination.writeDecision(requestId: decision.id, approved: true)
+                        }
+                    }
                 )
             }
 
@@ -421,6 +477,16 @@ struct NotchView: View {
         .onHover { isHovering = $0 }
         .onChange(of: isExpanded) { expanded in
             withAnimation(.easeInOut(duration: expanded ? 0.25 : 0.2)) { showExpanded = expanded }
+        }
+        .onChange(of: coordination.pendingDecisions.count) { count in
+            // Auto-expand the notch on the mouse's screen when a conflict arrives
+            if count > 0 && state.expandedScreenID == nil {
+                let loc = NSEvent.mouseLocation
+                if let mouseScreen = NSScreen.screens.first(where: { $0.frame.contains(loc) }),
+                   mouseScreen.displayID == screenID {
+                    expand()
+                }
+            }
         }
     }
 

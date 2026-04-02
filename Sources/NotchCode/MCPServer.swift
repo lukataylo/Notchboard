@@ -72,6 +72,22 @@ def read_locks():
 def write_locks(locks):
     LOCKS_FILE.write_text(json.dumps(locks, default=str))
 
+def _write_mcp_conflict(file_path, blocked_agent, owner_lock):
+    """Write a conflict event so the Notchboard UI displays it."""
+    conflict_dir = BASE / "events" / "mcp"
+    conflict_dir.mkdir(parents=True, exist_ok=True)
+    event = {
+        "type": "mcp_conflict",
+        "file_path": file_path,
+        "file_name": os.path.basename(file_path),
+        "blocked_agent": blocked_agent,
+        "owner_agent": owner_lock.get("agent_name", "unknown"),
+        "owner_type": owner_lock.get("agent_type", "unknown"),
+        "timestamp": time.time()
+    }
+    event_file = conflict_dir / f"conflict-{int(time.time()*1000)}.json"
+    event_file.write_text(json.dumps(event))
+
 # --- MCP Protocol ---
 
 TOOLS = [
@@ -173,7 +189,9 @@ def handle_tool(name, args):
             existing = locks[fp]
             # Check if stale (>5 min)
             if time.time() - existing.get("claimed_at", 0) < 300:
-                return f"⚠️ CONFLICT: '{fp}' is already claimed by {existing['agent_name']} ({existing.get('agent_type', '?')}). Wait for them to finish or coordinate."
+                # Write a conflict event so the Notchboard UI shows it
+                _write_mcp_conflict(fp, agent, existing)
+                return f"⚠️ CONFLICT: '{fp}' is already claimed by {existing['agent_name']} ({existing.get('agent_type', '?')}). Wait for them to finish or coordinate. Use read_context for details."
         locks[fp] = {"agent_name": agent, "agent_type": "unknown", "claimed_at": time.time()}
         write_locks(locks)
         return f"✅ Claimed '{os.path.basename(fp)}'. Other agents will be warned if they try to edit it."
@@ -323,28 +341,44 @@ if __name__ == "__main__":
         """
     }
 
-    /// Install MCP server config into Claude Code's project-level .mcp.json
+    /// Install MCP server config into Claude Code and Cursor
     func installMCPConfig() {
-        // Write to ~/.claude/mcp.json for global access
-        let globalMCP = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/mcp.json")
+        let serverEntry: [String: Any] = [
+            "command": scriptPath.path,
+            "args": [] as [String]
+        ]
 
+        // Claude Code: ~/.claude/mcp.json
+        installMCPInto(
+            path: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/mcp.json"),
+            serverEntry: serverEntry
+        )
+
+        // Cursor: ~/Library/Application Support/Cursor/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json
+        // Also try the standard Cursor MCP path
+        let cursorMCP = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/cursor-mcp/mcp.json")
+        installMCPInto(path: cursorMCP, serverEntry: serverEntry)
+
+        // Cursor also reads from ~/.cursor/mcp.json in some versions
+        let cursorHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor/mcp.json")
+        installMCPInto(path: cursorHome, serverEntry: serverEntry)
+    }
+
+    private func installMCPInto(path: URL, serverEntry: [String: Any]) {
         var existing: [String: Any] = [:]
-        if let data = try? Data(contentsOf: globalMCP),
+        if let data = try? Data(contentsOf: path),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             existing = json
         }
 
         var servers = existing["mcpServers"] as? [String: Any] ?? [:]
-        servers["notchcode-switchboard"] = [
-            "command": scriptPath.path,
-            "args": [] as [String]
-        ]
+        servers["notchcode-switchboard"] = serverEntry
         existing["mcpServers"] = servers
 
         if let data = try? JSONSerialization.data(withJSONObject: existing, options: .prettyPrinted) {
-            try? FileManager.default.createDirectory(at: globalMCP.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? data.write(to: globalMCP)
+            try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: path)
         }
     }
 }

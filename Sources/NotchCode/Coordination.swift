@@ -33,6 +33,8 @@ struct PendingDecision: Identifiable {
     let ownerSession: String
     let toolDescription: String
     let fileName: String
+    let filePath: String?        // full path for revert
+    let isExternal: Bool         // true = file watcher detected (no hook waiting, persists until user acts)
     let receivedAt: Date
 }
 
@@ -52,6 +54,7 @@ class CoordinationEngine: ObservableObject {
     let decisionsDir: URL
     let contextFile: URL
     let locksFile: URL
+    let mcpEventsDir: URL
 
     @Published var fileLocks: [String: FileLock] = [:]
     @Published var contextEntries: [ContextEntry] = []
@@ -63,7 +66,9 @@ class CoordinationEngine: ObservableObject {
         decisionsDir = base.appendingPathComponent("decisions")
         contextFile = base.appendingPathComponent("context.json")
         locksFile = base.appendingPathComponent("file_locks.json")
+        mcpEventsDir = base.appendingPathComponent("events/mcp")
         try? FileManager.default.createDirectory(at: decisionsDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: mcpEventsDir, withIntermediateDirectories: true)
         loadContext()
         Self.shared = self
     }
@@ -149,6 +154,8 @@ class CoordinationEngine: ObservableObject {
             ownerSession: conflict.sessionName,
             toolDescription: event.toolDescription,
             fileName: fileName,
+            filePath: filePath,
+            isExternal: false,
             receivedAt: Date()
         )
         pendingDecisions.append(decision)
@@ -186,12 +193,102 @@ class CoordinationEngine: ObservableObject {
         log.info("Decision: \(requestId) → \(approved ? "approve" : "block")")
     }
 
-    /// Auto-approve pending decisions that have timed out
+    /// Auto-approve pending hook-based decisions that have timed out.
+    /// Expire hook-based decisions (auto-approve after timeout).
+    /// When auto-resolve is on, also resolve external conflicts (keep owner).
     func expireOldDecisions() {
-        let expired = pendingDecisions.filter { Date().timeIntervalSince($0.receivedAt) > 12 }
+        let expired = pendingDecisions.filter { !$0.isExternal && Date().timeIntervalSince($0.receivedAt) > 12 }
         for decision in expired {
             writeDecision(requestId: decision.id, approved: true)
         }
+
+        // Auto-resolve: keep owner's lock, dismiss after 3s so the visual is seen briefly
+        if AppSettings.shared.autoResolve {
+            let autoResolvable = pendingDecisions.filter { $0.isExternal && Date().timeIntervalSince($0.receivedAt) > 3 }
+            for decision in autoResolvable {
+                resolveExternalConflict(id: decision.id, keepOwner: true)
+            }
+        }
+    }
+
+    /// Poll for MCP conflict events (written by the Python MCP server when claim_file detects a conflict).
+    func pollMCPConflicts() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: mcpEventsDir, includingPropertiesForKeys: nil) else { return }
+
+        for file in files.filter({ $0.pathExtension == "json" }) {
+            guard let data = try? Data(contentsOf: file),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  json["type"] as? String == "mcp_conflict" else {
+                try? fm.removeItem(at: file)
+                continue
+            }
+
+            let fileName = json["file_name"] as? String ?? "unknown"
+            let filePath = json["file_path"] as? String
+            let blockedAgent = json["blocked_agent"] as? String ?? "unknown"
+            let ownerAgent = json["owner_agent"] as? String ?? "unknown"
+            let ownerType = json["owner_type"] as? String ?? "Claude Code"
+
+            // Don't duplicate if we already have a pending decision for this file
+            if pendingDecisions.contains(where: { $0.fileName == fileName }) {
+                try? fm.removeItem(at: file)
+                continue
+            }
+
+            stats.conflictsPrevented += 1
+
+            let decision = PendingDecision(
+                id: UUID().uuidString,
+                blockedAgent: .cursor,  // MCP callers are typically the second agent
+                blockedSession: blockedAgent,
+                ownerAgent: ownerType.contains("Cursor") ? .cursor : .claudeCode,
+                ownerSession: ownerAgent,
+                toolDescription: "claim_file \(fileName)",
+                fileName: fileName,
+                filePath: filePath,
+                isExternal: true,  // No hook waiting — persists until user acts
+                receivedAt: Date()
+            )
+            pendingDecisions.append(decision)
+            objectWillChange.send()
+
+            try? fm.removeItem(at: file)
+        }
+    }
+
+    /// Resolve an external conflict. If keeping the owner, revert the file via git.
+    func resolveExternalConflict(id: String, keepOwner: Bool) {
+        guard let decision = pendingDecisions.first(where: { $0.id == id }) else { return }
+
+        if keepOwner, let path = decision.filePath {
+            // Revert the file to undo the external edit
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                proc.arguments = ["checkout", "--", path]
+                // Run git from the file's directory
+                proc.currentDirectoryURL = URL(fileURLWithPath: (path as NSString).deletingLastPathComponent)
+                proc.standardOutput = FileHandle.nullDevice
+                proc.standardError = FileHandle.nullDevice
+                try? proc.run()
+                proc.waitUntilExit()
+            }
+
+            addContext(agentType: decision.ownerAgent, sessionName: "switchboard",
+                       message: "Reverted \(decision.fileName) — \(decision.blockedSession)'s edit was undone. \(decision.ownerSession) keeps the lock.")
+        } else {
+            // Accept the external edit — transfer the lock to the modifier
+            if let path = decision.filePath {
+                claimFile(path, agentType: decision.blockedAgent, sessionName: decision.blockedSession, sessionId: UUID())
+            }
+
+            addContext(agentType: decision.blockedAgent, sessionName: "switchboard",
+                       message: "\(decision.blockedSession) took over \(decision.fileName). Lock transferred from \(decision.ownerSession).")
+        }
+
+        pendingDecisions.removeAll { $0.id == id }
+        objectWillChange.send()
     }
 
     // MARK: - Shared Context

@@ -7,6 +7,7 @@ class AppSettings: ObservableObject {
     @AppStorage("launchAtLogin") var launchAtLogin: Bool = false
     @AppStorage("monitorClaude") var monitorClaude: Bool = true
     @AppStorage("monitorCursor") var monitorCursor: Bool = true
+    @AppStorage("autoResolve") var autoResolve: Bool = false
 }
 
 struct SettingsView: View {
